@@ -47,7 +47,7 @@ Double click `Aj179PStat.exe`. It will start silently in your Windows system tra
 - [.NET 8.0 SDK](https://dotnet.microsoft.com/download) or [.NET 10.0 SDK](https://dotnet.microsoft.com/download)
 
 ### Build Standalone Single File EXE
-Run the included `publish.bat` or execute the following command:
+Execute the following command:
 
 ```powershell
 dotnet publish -c Release -r win-x64 --self-contained true /p:PublishSingleFile=true /p:IncludeNativeLibrariesForSelfExtract=true -o ./publish
