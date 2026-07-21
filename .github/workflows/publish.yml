@@ -2,6 +2,8 @@ name: Build and Release
 
 on:
   push:
+    branches:
+      - main
     tags:
       - 'v*'
   workflow_dispatch:
@@ -9,6 +11,8 @@ on:
 jobs:
   build-and-release:
     runs-on: windows-latest
+    permissions:
+      contents: write
 
     steps:
       - name: Checkout repository
@@ -23,13 +27,16 @@ jobs:
         run: |
           dotnet publish Aj179PStat.csproj -c Release -r win-x64 --self-contained true /p:PublishSingleFile=true /p:IncludeNativeLibrariesForSelfExtract=true /p:EnableCompressionInSingleFile=true -o ./release-output
 
+      - name: Upload Build Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Aj179PStat-win-x64
+          path: ./release-output/Aj179PStat.exe
+
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/')
         with:
-          tag_name: ${{ github.ref_name }}
-          name: Release ${{ github.ref_name }}
-          draft: false
-          prerelease: false
           files: ./release-output/Aj179PStat.exe
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
