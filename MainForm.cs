@@ -1,6 +1,7 @@
 using System;
 using System.Drawing;
 using System.Runtime.InteropServices;
+using System.Threading.Tasks;
 using System.Windows.Forms;
 using Microsoft.Win32;
 
@@ -36,6 +37,8 @@ namespace Aj179PStat
         private int _pollingIntervalMinutes = 5;
         private bool _hasNotifiedLowBattery = false;
         private bool _allowShowForm = false; // Prevents form from showing on app launch
+        private bool _wasConnected = false;
+        private bool _isUpdating = false;
 
         private const string RegistryRunKey = @"SOFTWARE\Microsoft\Windows\CurrentVersion\Run";
         private const string RegistrySettingsKey = @"SOFTWARE\Aj179PStat";
@@ -67,7 +70,7 @@ namespace Aj179PStat
             {
                 if (e.Button == MouseButtons.Left)
                 {
-                    UpdateBatteryStatus();
+                    UpdateBatteryStatusAsync(isManualRefresh: true);
                 }
             };
 
@@ -84,13 +87,13 @@ namespace Aj179PStat
             _pollingTimer = new System.Threading.Timer(_ => 
             {
                 if (InvokeRequired)
-                    BeginInvoke(new Action(UpdateBatteryStatus));
+                    BeginInvoke(new Action(() => UpdateBatteryStatusAsync()));
                 else
-                    UpdateBatteryStatus();
+                    UpdateBatteryStatusAsync();
             }, null, TimeSpan.FromMinutes(_pollingIntervalMinutes), TimeSpan.FromMinutes(_pollingIntervalMinutes));
 
             // Initial fetch AFTER _pollingTimer is instantiated
-            UpdateBatteryStatus();
+            UpdateBatteryStatusAsync();
         }
 
         protected override void SetVisibleCore(bool value)
@@ -111,10 +114,11 @@ namespace Aj179PStat
                 int wParam = m.WParam.ToInt32();
                 if (wParam == DBT_DEVICEARRIVAL || wParam == DBT_DEVICEREMOVECOMPLETE || wParam == DBT_DEVNODES_CHANGED)
                 {
+                    bool isArrival = wParam == DBT_DEVICEARRIVAL;
                     if (InvokeRequired)
-                        BeginInvoke(new Action(UpdateBatteryStatus));
+                        BeginInvoke(new Action(() => UpdateBatteryStatusAsync(isDeviceArrival: isArrival)));
                     else
-                        UpdateBatteryStatus();
+                        UpdateBatteryStatusAsync(isDeviceArrival: isArrival);
                 }
             }
             base.WndProc(ref m);
@@ -240,7 +244,7 @@ namespace Aj179PStat
                 Size = new Size(120, 35),
                 Location = new Point(15, 10)
             };
-            _btnRefresh.Click += (s, e) => UpdateBatteryStatus();
+            _btnRefresh.Click += (s, e) => UpdateBatteryStatusAsync(isManualRefresh: true);
 
             var lblInterval = new Label
             {
@@ -301,18 +305,34 @@ namespace Aj179PStat
             menu.Items.Add(new ToolStripSeparator());
 
             menu.Items.Add(new ToolStripMenuItem("Open Dashboard", null, (s, e) => RestoreFromTray()));
-            menu.Items.Add(new ToolStripMenuItem("Refresh Now", null, (s, e) => UpdateBatteryStatus()));
+            menu.Items.Add(new ToolStripMenuItem("Refresh Now", null, (s, e) => UpdateBatteryStatusAsync(isManualRefresh: true)));
             menu.Items.Add(new ToolStripSeparator());
             menu.Items.Add(new ToolStripMenuItem("Exit", null, (s, e) => ExitApplication()));
 
             return menu;
         }
 
-        public void UpdateBatteryStatus()
+        public async void UpdateBatteryStatusAsync(bool isDeviceArrival = false, bool isManualRefresh = false)
         {
+            if (_isUpdating) return;
+            _isUpdating = true;
+
             try
             {
+                // Check if device path exists
+                var matchingPaths = HidDeviceManager.GetMatchingDevicePaths(HidDeviceManager.TargetVendorId, HidDeviceManager.TargetProductId);
+
+                // If mouse just reconnected or arrived and wasn't connected previously, apply a 2-second delay
+                if (matchingPaths.Count > 0 && (!_wasConnected || isDeviceArrival) && !isManualRefresh)
+                {
+                    if (_lblStatusState != null)
+                        _lblStatusState.Text = "Mouse detected! Initializing (2s delay)...";
+
+                    await Task.Delay(2000);
+                }
+
                 BatteryStatus status = _hidManager.ReadBatteryStatus();
+                _wasConnected = status.IsConnected;
 
                 // Dynamic Auto-Reconnect Polling adjustment (safely guarded)
                 if (_pollingTimer != null)
@@ -372,6 +392,10 @@ namespace Aj179PStat
             {
                 if (_txtLog != null)
                     _txtLog.Text = $"[{DateTime.Now:HH:mm:ss}] Error: {ex.Message}";
+            }
+            finally
+            {
+                _isUpdating = false;
             }
         }
 
