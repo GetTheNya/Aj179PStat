@@ -11,6 +11,11 @@ namespace Aj179PStat
         [DllImport("user32.dll", SetLastError = true)]
         private static extern bool DestroyIcon(IntPtr hIcon);
 
+        private const int WM_DEVICECHANGE = 0x0219;
+        private const int DBT_DEVICEARRIVAL = 0x8000;
+        private const int DBT_DEVICEREMOVECOMPLETE = 0x8004;
+        private const int DBT_DEVNODES_CHANGED = 0x0007;
+
         private readonly HidDeviceManager _hidManager;
         private readonly System.Threading.Timer _pollingTimer;
         private readonly NotifyIcon _notifyIcon;
@@ -57,19 +62,25 @@ namespace Aj179PStat
                 ContextMenuStrip = CreateContextMenu()
             };
 
-            // Only restore/toggle window on LEFT mouse click so RIGHT mouse click opens context menu natively
+            // Single Left-Click refreshes status immediately
             _notifyIcon.MouseClick += (s, e) =>
             {
                 if (e.Button == MouseButtons.Left)
                 {
-                    ToggleWindowVisibility();
+                    UpdateBatteryStatus();
                 }
             };
 
-            // Initial fetch
-            UpdateBatteryStatus();
+            // Double Left-Click opens/restores Dashboard form
+            _notifyIcon.MouseDoubleClick += (s, e) =>
+            {
+                if (e.Button == MouseButtons.Left)
+                {
+                    RestoreFromTray();
+                }
+            };
 
-            // Timer
+            // Timer initialized FIRST before initial battery fetch
             _pollingTimer = new System.Threading.Timer(_ => 
             {
                 if (InvokeRequired)
@@ -77,6 +88,9 @@ namespace Aj179PStat
                 else
                     UpdateBatteryStatus();
             }, null, TimeSpan.FromMinutes(_pollingIntervalMinutes), TimeSpan.FromMinutes(_pollingIntervalMinutes));
+
+            // Initial fetch AFTER _pollingTimer is instantiated
+            UpdateBatteryStatus();
         }
 
         protected override void SetVisibleCore(bool value)
@@ -87,6 +101,23 @@ namespace Aj179PStat
                 if (!IsHandleCreated) CreateHandle();
             }
             base.SetVisibleCore(value);
+        }
+
+        protected override void WndProc(ref Message m)
+        {
+            // Instant auto-reconnect when Windows detects USB or HID device arrival/removal
+            if (m.Msg == WM_DEVICECHANGE)
+            {
+                int wParam = m.WParam.ToInt32();
+                if (wParam == DBT_DEVICEARRIVAL || wParam == DBT_DEVICEREMOVECOMPLETE || wParam == DBT_DEVNODES_CHANGED)
+                {
+                    if (InvokeRequired)
+                        BeginInvoke(new Action(UpdateBatteryStatus));
+                    else
+                        UpdateBatteryStatus();
+                }
+            }
+            base.WndProc(ref m);
         }
 
         private void InitializeComponents()
@@ -283,13 +314,28 @@ namespace Aj179PStat
             {
                 BatteryStatus status = _hidManager.ReadBatteryStatus();
 
+                // Dynamic Auto-Reconnect Polling adjustment (safely guarded)
+                if (_pollingTimer != null)
+                {
+                    if (!status.IsConnected)
+                    {
+                        // Fast poll every 10 seconds when disconnected to detect mouse wake/reconnect
+                        _pollingTimer.Change(TimeSpan.FromSeconds(10), TimeSpan.FromSeconds(10));
+                    }
+                    else
+                    {
+                        // Restore normal polling interval when connected
+                        _pollingTimer.Change(TimeSpan.FromMinutes(_pollingIntervalMinutes), TimeSpan.FromMinutes(_pollingIntervalMinutes));
+                    }
+                }
+
                 // Update Form UI
                 if (!status.IsConnected)
                 {
                     _lblBatteryPercent.Text = "N/A";
                     _lblBatteryPercent.ForeColor = Color.Gray;
-                    _lblStatusState.Text = "Disconnected / Mouse not found";
-                    _txtLog.Text = $"[{DateTime.Now:HH:mm:ss}] Mouse Disconnected.\r\nSearching for VID_3151 & PID_402D...";
+                    _lblStatusState.Text = "Disconnected (Searching every 10s...)";
+                    _txtLog.Text = $"[{DateTime.Now:HH:mm:ss}] Mouse Disconnected.\r\nSearching for VID_3151 & PID_402D (Auto-reconnecting)...";
                 }
                 else
                 {
@@ -324,7 +370,8 @@ namespace Aj179PStat
             }
             catch (Exception ex)
             {
-                _txtLog.Text = $"[{DateTime.Now:HH:mm:ss}] Error: {ex.Message}";
+                if (_txtLog != null)
+                    _txtLog.Text = $"[{DateTime.Now:HH:mm:ss}] Error: {ex.Message}";
             }
         }
 
@@ -357,19 +404,7 @@ namespace Aj179PStat
         private void SetPollingInterval(int minutes)
         {
             _pollingIntervalMinutes = minutes;
-            _pollingTimer.Change(TimeSpan.FromMinutes(minutes), TimeSpan.FromMinutes(minutes));
-        }
-
-        private void ToggleWindowVisibility()
-        {
-            if (Visible && WindowState != FormWindowState.Minimized)
-            {
-                MinimizeToTray();
-            }
-            else
-            {
-                RestoreFromTray();
-            }
+            _pollingTimer?.Change(TimeSpan.FromMinutes(minutes), TimeSpan.FromMinutes(minutes));
         }
 
         public void RestoreFromTray()
