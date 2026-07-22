@@ -8,8 +8,10 @@ namespace Aj179PStat
 {
     public class BatteryStatus
     {
-        public bool IsConnected { get; set; }
-        public int BatteryPercent { get; set; }
+        public bool IsConnected { get; set; }          // Receiver USB present
+        public bool IsMouseActive { get; set; }        // data[4] == 0 (Mouse awake/active)
+        public byte RawDockStatusByte { get; set; }    // Raw data[4] byte (0 = active, 1 = asleep/off)
+        public int BatteryPercent { get; set; }        // Last reported battery % (data[2])
         public string RawDataHex { get; set; } = string.Empty;
         public string StatusMessage { get; set; } = string.Empty;
     }
@@ -18,6 +20,8 @@ namespace Aj179PStat
     {
         public const ushort TargetVendorId = 0x3151;
         public const ushort TargetProductId = 0x402D;
+
+        private int _lastValidBatteryPercent = 0;
 
         #region Native Win32 Structures and Imports
 
@@ -203,7 +207,9 @@ namespace Aj179PStat
             if (paths.Count == 0)
             {
                 status.IsConnected = false;
-                status.StatusMessage = "Ajazz AJ179 Pro not found (VID_3151 & PID_402D)";
+                status.IsMouseActive = false;
+                status.BatteryPercent = _lastValidBatteryPercent;
+                status.StatusMessage = "Ajazz AJ179 Pro receiver not found (VID_3151 & PID_402D)";
                 return status;
             }
 
@@ -226,24 +232,29 @@ namespace Aj179PStat
                 try
                 {
                     byte[] response = SendAndReceiveReport(handle, out string methodUsed);
-                    if (response != null && response.Length >= 3)
+                    if (response != null && response.Length >= 5)
                     {
-                        // data[2] is percent of battery (or response[3] if prepended report ID)
                         int batteryIdx = (response.Length == 65) ? 3 : 2;
-                        byte batteryByte = response[batteryIdx];
+                        int dockStatusIdx = (response.Length == 65) ? 5 : 4;
 
-                        if (batteryByte <= 100 && batteryByte > 0)
+                        byte batteryByte = response[batteryIdx];
+                        byte dockStatusByte = response[dockStatusIdx];
+
+                        status.IsConnected = true;
+                        status.RawDockStatusByte = dockStatusByte;
+                        status.IsMouseActive = (dockStatusByte == 0); // 0 = active, 1 = asleep / idle / off
+
+                        if (batteryByte > 0 && batteryByte <= 100)
                         {
-                            status.IsConnected = true;
-                            status.BatteryPercent = batteryByte;
-                            status.RawDataHex = BitConverter.ToString(response).Replace("-", " ");
-                            status.StatusMessage = $"Method: {methodUsed}\r\nPath: {GetShortPath(path)}";
-                            return status;
+                            _lastValidBatteryPercent = batteryByte;
                         }
-                        else
-                        {
-                            attemptLogs.Add($"[{methodUsed}] Response received but batteryByte out of range ({batteryByte})");
-                        }
+
+                        status.BatteryPercent = _lastValidBatteryPercent;
+                        status.RawDataHex = BitConverter.ToString(response).Replace("-", " ");
+
+                        string stateStr = status.IsMouseActive ? "Mouse Active" : "Mouse Asleep / Idle (data[4]=1)";
+                        status.StatusMessage = $"Method: {methodUsed}\r\nState: {stateStr}\r\nPath: {GetShortPath(path)}";
+                        return status;
                     }
                     else
                     {
@@ -257,7 +268,9 @@ namespace Aj179PStat
             }
 
             status.IsConnected = true;
-            status.StatusMessage = "Mouse detected, but payload response failed.\r\n" + string.Join("\r\n", attemptLogs);
+            status.IsMouseActive = false;
+            status.BatteryPercent = _lastValidBatteryPercent;
+            status.StatusMessage = "Dock detected, but payload response failed.\r\n" + string.Join("\r\n", attemptLogs);
             return status;
         }
 

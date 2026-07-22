@@ -37,7 +37,7 @@ namespace Aj179PStat
         private int _pollingIntervalMinutes = 5;
         private bool _hasNotifiedLowBattery = false;
         private bool _allowShowForm = false; // Prevents form from showing on app launch
-        private bool _wasConnected = false;
+        private bool _wasActive = false;
         private bool _isUpdating = false;
 
         private const string RegistryRunKey = @"SOFTWARE\Microsoft\Windows\CurrentVersion\Run";
@@ -319,57 +319,69 @@ namespace Aj179PStat
 
             try
             {
-                // Check if device path exists
                 var matchingPaths = HidDeviceManager.GetMatchingDevicePaths(HidDeviceManager.TargetVendorId, HidDeviceManager.TargetProductId);
 
-                // If mouse just reconnected or arrived and wasn't connected previously, apply a 2-second delay
-                if (matchingPaths.Count > 0 && (!_wasConnected || isDeviceArrival) && !isManualRefresh)
+                // 2-second delay if mouse just woke up or reconnected
+                if (matchingPaths.Count > 0 && (!_wasActive || isDeviceArrival) && !isManualRefresh)
                 {
                     if (_lblStatusState != null)
-                        _lblStatusState.Text = "Mouse detected! Initializing (2s delay)...";
+                        _lblStatusState.Text = "Mouse waking up! Initializing (2s delay)...";
 
                     await Task.Delay(2000);
                 }
 
                 BatteryStatus status = _hidManager.ReadBatteryStatus();
-                _wasConnected = status.IsConnected;
+                _wasActive = status.IsConnected && status.IsMouseActive;
 
-                // Dynamic Auto-Reconnect Polling adjustment (safely guarded)
+                // Dynamic Polling adjustment:
                 if (_pollingTimer != null)
                 {
-                    if (!status.IsConnected)
+                    if (!_wasActive)
                     {
-                        // Fast poll every 10 seconds when disconnected to detect mouse wake/reconnect
+                        // Fast poll every 10 seconds when mouse is asleep/idle (data[4] = 1) or disconnected
                         _pollingTimer.Change(TimeSpan.FromSeconds(10), TimeSpan.FromSeconds(10));
                     }
                     else
                     {
-                        // Restore normal polling interval when connected
+                        // Restore normal polling interval when mouse is active (data[4] = 0)
                         _pollingTimer.Change(TimeSpan.FromMinutes(_pollingIntervalMinutes), TimeSpan.FromMinutes(_pollingIntervalMinutes));
                     }
                 }
 
                 // Update Form UI
-                if (!status.IsConnected)
+                if (_lblBatteryPercent != null && _lblStatusState != null && _txtLog != null)
                 {
-                    _lblBatteryPercent.Text = "N/A";
-                    _lblBatteryPercent.ForeColor = Color.Gray;
-                    _lblStatusState.Text = "Disconnected (Searching every 10s...)";
-                    _txtLog.Text = $"[{DateTime.Now:HH:mm:ss}] Mouse Disconnected.\r\nSearching for VID_3151 & PID_402D (Auto-reconnecting)...";
-                }
-                else
-                {
-                    _lblBatteryPercent.Text = $"{status.BatteryPercent}%";
-                    _lblBatteryPercent.ForeColor = status.BatteryPercent > 50 ? Color.LightGreen :
-                                                   status.BatteryPercent > 20 ? Color.Gold : Color.OrangeRed;
-                    _lblStatusState.Text = "Status: Mouse Connected";
-                    
-                    _txtLog.Text = $"[{DateTime.Now:HH:mm:ss}] Battery: {status.BatteryPercent}%\r\n" +
-                                   $"Message: {status.StatusMessage}\r\n" +
-                                   $"Raw Payload Hex: {status.RawDataHex}";
+                    if (!status.IsConnected)
+                    {
+                        _lblBatteryPercent.Text = "N/A";
+                        _lblBatteryPercent.ForeColor = Color.Gray;
+                        _lblStatusState.Text = "Disconnected (Receiver not found)";
+                        _txtLog.Text = $"[{DateTime.Now:HH:mm:ss}] Receiver Disconnected.\r\nSearching for VID_3151 & PID_402D...";
+                    }
+                    else if (!status.IsMouseActive)
+                    {
+                        // Asleep / Idle: Display last known battery percentage in Gray
+                        _lblBatteryPercent.Text = $"{status.BatteryPercent}%";
+                        _lblBatteryPercent.ForeColor = Color.Gray;
+                        _lblStatusState.Text = "Status: Mouse Asleep / Idle (data[4] = 1)";
+                        _txtLog.Text = $"[{DateTime.Now:HH:mm:ss}] Mouse Asleep / Idle (data[4] = {status.RawDockStatusByte}).\r\n" +
+                                       $"Showing last reported battery level: {status.BatteryPercent}% (may not be 100% real-time).\r\n" +
+                                       $"Raw Payload Hex: {status.RawDataHex}";
+                    }
+                    else
+                    {
+                        _lblBatteryPercent.Text = $"{status.BatteryPercent}%";
+                        _lblBatteryPercent.ForeColor = status.BatteryPercent > 50 ? Color.LightGreen :
+                                                       status.BatteryPercent > 20 ? Color.Gold : Color.OrangeRed;
+                        _lblStatusState.Text = "Status: Mouse Active (2.4GHz Dock)";
+                        
+                        _txtLog.Text = $"[{DateTime.Now:HH:mm:ss}] Battery: {status.BatteryPercent}% (data[4] = {status.RawDockStatusByte})\r\n" +
+                                       $"Message: {status.StatusMessage}\r\n" +
+                                       $"Raw Payload Hex: {status.RawDataHex}";
 
-                    // Low battery notification check
-                    CheckLowBatteryNotification(status.BatteryPercent);
+                        // Low battery notification check
+                        CheckLowBatteryNotification(status.BatteryPercent);
+                    }
                 }
 
                 // Update System Tray Icon
@@ -385,7 +397,12 @@ namespace Aj179PStat
                 }
                 _currentHicon = newHicon;
 
-                string tooltip = status.IsConnected ? $"Ajazz AJ179 Pro: {status.BatteryPercent}%" : "Ajazz AJ179 Pro: Disconnected";
+                string tooltip = !status.IsConnected
+                    ? "Ajazz AJ179 Pro: Disconnected"
+                    : !status.IsMouseActive
+                        ? $"Ajazz AJ179 Pro: {status.BatteryPercent}% (Asleep / Idle)"
+                        : $"Ajazz AJ179 Pro: {status.BatteryPercent}%";
+
                 _notifyIcon.Text = tooltip.Length > 63 ? tooltip.Substring(0, 63) : tooltip;
             }
             catch (Exception ex)

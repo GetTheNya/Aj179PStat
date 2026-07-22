@@ -25,8 +25,14 @@ namespace Aj179PStat
 
                 if (!status.IsConnected)
                 {
-                    bgColor = Color.FromArgb(90, 90, 90);
-                    borderColor = Color.FromArgb(140, 140, 140);
+                    bgColor = Color.FromArgb(80, 80, 80);
+                    borderColor = Color.FromArgb(120, 120, 120);
+                }
+                else if (!status.IsMouseActive)
+                {
+                    // Asleep / Idle (data[4] == 1): Neutral Slate Gray badge showing last reported percentage
+                    bgColor = Color.FromArgb(95, 105, 115);
+                    borderColor = Color.FromArgb(145, 155, 165);
                 }
                 else if (status.BatteryPercent > 50)
                 {
